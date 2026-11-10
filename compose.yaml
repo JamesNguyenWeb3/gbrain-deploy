@@ -14,6 +14,13 @@
 
 name: gbrain
 
+x-gbrain-build: &gbrain-build
+  context: .
+  dockerfile: Dockerfile
+  args:
+    GBRAIN_REPO: ${GBRAIN_REPO:-garrytan/gbrain}
+    GBRAIN_VERSION: ${GBRAIN_VERSION:-latest}
+
 x-gbrain-common-env: &gbrain-common-env
   TZ: ${TZ:-Asia/Ho_Chi_Minh}
   GBRAIN_HOME: /srv/gbrain
@@ -97,12 +104,7 @@ services:
       start_period: 10s
 
   gbrain:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        GBRAIN_REPO: ${GBRAIN_REPO:-garrytan/gbrain}
-        GBRAIN_VERSION: ${GBRAIN_VERSION:-latest}
+    build: *gbrain-build
     image: gbrain-prod:latest
     container_name: gbrain-serve
     restart: unless-stopped
@@ -142,6 +144,7 @@ services:
       start_period: 30s
 
   worker:
+    build: *gbrain-build
     image: gbrain-prod:latest
     container_name: gbrain-worker
     restart: unless-stopped
@@ -172,6 +175,7 @@ services:
       start_period: 30s
 
   autopilot:
+    build: *gbrain-build
     image: gbrain-prod:latest
     container_name: gbrain-autopilot
     restart: unless-stopped
