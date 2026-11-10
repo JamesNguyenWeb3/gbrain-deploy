@@ -1,0 +1,47 @@
+# ==============================================================================
+# Arcane Docker Manager — Host Control Plane Compose (/opt/arcane/compose.yaml)
+#
+# Official Image: ghcr.io/getarcaneapp/manager:latest
+# Default Web UI: http://<VM_IP>:3552 (or via Caddy HTTPS / SSH tunnel)
+# Default First-Boot Login:
+#   Username: arcane
+#   Password: arcane-admin  (forced password change on first login)
+#
+# CRITICAL DOCKER-OUT-OF-DOCKER (DooD) INVARIANT:
+#   `PROJECTS_DIRECTORY=/opt/stacks` is mounted identically at `/opt/stacks:/opt/stacks`
+#   so that relative paths inside GBrain's compose.yaml (`./Caddyfile`, `./initdb`,
+#   and `build: context: .`) resolve to the exact same path on the host Docker daemon!
+# ==============================================================================
+
+name: arcane-manager
+
+services:
+  arcane:
+    image: ghcr.io/getarcaneapp/manager:latest
+    container_name: arcane
+    restart: unless-stopped
+    ports:
+      - "${ARCANE_BIND_IP:-0.0.0.0}:${ARCANE_PORT:-3552}:3552"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - arcane-data:/app/data
+      - /opt/stacks:/opt/stacks
+    environment:
+      APP_URL: ${ARCANE_APP_URL:-http://localhost:3552}
+      PORT: "3552"
+      PUID: ${ARCANE_PUID:-0}
+      PGID: ${ARCANE_PGID:-0}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required (generate with openssl rand -base64 32)}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required (generate with openssl rand -base64 32)}
+      PROJECTS_DIRECTORY: /opt/stacks
+    cgroup: host
+    healthcheck:
+      test: ["CMD", "./arcane", "health", "--timeout", "2s"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  arcane-data:
+

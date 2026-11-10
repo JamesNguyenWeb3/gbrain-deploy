@@ -1,0 +1,43 @@
+# ==============================================================================
+# GBrain Production Caddyfile (Arcane-Managed Linux VM)
+#
+# Automatically provisions & renews Let's Encrypt TLS certificates for
+# `GBRAIN_DOMAIN` (default: `gbrain.touchesai.com`), redirects HTTP -> HTTPS,
+# and proxies to `gbrain:3131` with unbuffered SSE streaming (`flush_interval -1`).
+# ==============================================================================
+
+{
+	email {$ACME_EMAIL:admin@touchesai.com}
+}
+
+{$GBRAIN_DOMAIN:gbrain.touchesai.com} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# Reverse proxy to GBrain HTTP MCP (/mcp), OAuth 2.1, and Admin SPA (/admin)
+	# flush_interval -1 disables proxy buffering for SSE streams
+	reverse_proxy gbrain:3131 {
+		flush_interval -1
+		header_up X-Real-IP {remote_host}
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
+}
+
+# Optional: Uncomment below after adding a DNS A record for `arcane.touchesai.com`
+# if you want Caddy to serve automatic Let's Encrypt HTTPS for the Arcane UI too:
+#
+# arcane.touchesai.com {
+# 	encode zstd gzip
+# 	reverse_proxy host.docker.internal:3552
+# }
+

@@ -1,0 +1,205 @@
+# ==============================================================================
+# GBrain Production Stack for Arcane Docker Manager (/opt/stacks/gbrain/compose.yaml)
+#
+# Managed via Arcane (https://github.com/getarcaneapp/arcane) in `/opt/stacks/gbrain`
+# or via Arcane Git Sync (`compose.yaml` / `docker-compose.arcane.yml`).
+#
+# Services:
+#   1. caddy      (gbrain-caddy)     : Automatic Let's Encrypt HTTPS -> gbrain:3131
+#   2. postgres   (gbrain-postgres)  : pgvector/pgvector:pg16 tuned for HNSW indexes
+#   3. gbrain     (gbrain-serve)     : HTTP MCP + OAuth 2.1 + Admin SPA (:3131)
+#   4. worker     (gbrain-worker)    : Minions job supervisor (`gbrain jobs supervisor`)
+#   5. autopilot  (gbrain-autopilot) : Background maintenance daemon (`--no-worker`)
+# ==============================================================================
+
+name: gbrain
+
+x-gbrain-common-env: &gbrain-common-env
+  TZ: ${TZ:-Asia/Ho_Chi_Minh}
+  GBRAIN_HOME: /srv/gbrain
+  GBRAIN_REPO_PATH: /srv/gbrain/brain
+  GBRAIN_DATABASE_URL: ${GBRAIN_DATABASE_URL:-postgresql://${POSTGRES_USER:-gbrain}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-gbrain}}
+  # OpenRouter (single-key LLM, Embeddings, Expansion & Reranker)
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required}
+  OPENROUTER_REFERER: ${OPENROUTER_REFERER:-https://${GBRAIN_DOMAIN:-gbrain.touchesai.com}}
+  OPENROUTER_TITLE: ${OPENROUTER_TITLE:-gbrain-self-hosted}
+  # Model Pins (File/Env plane)
+  GBRAIN_EMBEDDING_MODEL: ${GBRAIN_EMBEDDING_MODEL:-openrouter:openai/text-embedding-3-small}
+  GBRAIN_EMBEDDING_DIMENSIONS: ${GBRAIN_EMBEDDING_DIMENSIONS:-1536}
+  GBRAIN_EXPANSION_MODEL: ${GBRAIN_EXPANSION_MODEL:-openrouter:google/gemini-3-flash-preview}
+  GBRAIN_CHAT_MODEL: ${GBRAIN_CHAT_MODEL:-openrouter:anthropic/claude-sonnet-4.6}
+  GBRAIN_TIER_UTILITY_MODEL: ${GBRAIN_TIER_UTILITY_MODEL:-openrouter:anthropic/claude-haiku-4.5}
+  GBRAIN_TIER_REASONING_MODEL: ${GBRAIN_TIER_REASONING_MODEL:-openrouter:anthropic/claude-sonnet-4.6}
+  GBRAIN_TIER_DEEP_MODEL: ${GBRAIN_TIER_DEEP_MODEL:-openrouter:anthropic/claude-opus-4.7}
+  GBRAIN_TIER_SUBAGENT_MODEL: ${GBRAIN_TIER_SUBAGENT_MODEL:-openrouter:anthropic/claude-sonnet-4.6}
+  GBRAIN_RERANKER_MODEL: ${GBRAIN_RERANKER_MODEL:-openrouter:cohere/rerank-v3.5}
+  GBRAIN_SEARCH_MODE: ${GBRAIN_SEARCH_MODE:-balanced}
+  # System One / TypeSafe Jev (optional key; activates triage & conflict slots)
+  TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+  GBRAIN_TYPESAFE_BASE_URL: ${GBRAIN_TYPESAFE_BASE_URL:-}
+  GBRAIN_DECIDE_EGRESS_PRIVATE: ${GBRAIN_DECIDE_EGRESS_PRIVATE:-allow}
+  GBRAIN_DECIDE_ENABLE_RERANK: ${GBRAIN_DECIDE_ENABLE_RERANK:-0}
+  GBRAIN_DECIDE_DAILY_USD: ${GBRAIN_DECIDE_DAILY_USD:-1.00}
+  # Optional Git remote for canonical markdown sync
+  GBRAIN_GIT_REMOTE_URL: ${GBRAIN_GIT_REMOTE_URL:-}
+  GIT_AUTHOR_NAME: ${GIT_AUTHOR_NAME:-GBrain Operator}
+  GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-gbrain@localhost}
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: gbrain-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      GBRAIN_DOMAIN: ${GBRAIN_DOMAIN:-gbrain.touchesai.com}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@touchesai.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      gbrain:
+        condition: service_healthy
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: gbrain-postgres
+    restart: unless-stopped
+    shm_size: 1g
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-512MB}
+      - -c
+      - maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-1GB}
+      - -c
+      - max_connections=${PG_MAX_CONNECTIONS:-200}
+      - -c
+      - work_mem=${PG_WORK_MEM:-16MB}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gbrain}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-gbrain}
+    volumes:
+      - gbrain-pgdata:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-gbrain} -d $${POSTGRES_DB:-gbrain}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  gbrain:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        GBRAIN_REPO: ${GBRAIN_REPO:-garrytan/gbrain}
+        GBRAIN_VERSION: ${GBRAIN_VERSION:-latest}
+    image: gbrain-prod:latest
+    container_name: gbrain-serve
+    restart: unless-stopped
+    command: ["serve"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *gbrain-common-env
+      PORT: "3131"
+      GBRAIN_BIND: "0.0.0.0"
+      # Public HTTPS URL (automatically derived from GBRAIN_DOMAIN if GBRAIN_PUBLIC_URL is not set)
+      GBRAIN_PUBLIC_URL: ${GBRAIN_PUBLIC_URL:-https://${GBRAIN_DOMAIN:-gbrain.touchesai.com}}
+      # Owner Admin Bootstrap Token (32+ chars matching [A-Za-z0-9_-]+)
+      GBRAIN_ADMIN_BOOTSTRAP_TOKEN: ${GBRAIN_ADMIN_BOOTSTRAP_TOKEN:?GBRAIN_ADMIN_BOOTSTRAP_TOKEN is required (32+ chars)}
+      # Trust 1 reverse-proxy hop (Caddy) for X-Forwarded-For & req.secure
+      GBRAIN_HTTP_TRUST_PROXY: ${GBRAIN_HTTP_TRUST_PROXY:-1}
+      GBRAIN_OAUTH_TOKEN_TTL: ${GBRAIN_OAUTH_TOKEN_TTL:-3600}
+      GBRAIN_MCP_SURFACE: ${GBRAIN_MCP_SURFACE:-full}
+      GBRAIN_ENABLE_DCR: ${GBRAIN_ENABLE_DCR:-0}
+      GBRAIN_POOL_SIZE: ${GBRAIN_SERVE_POOL_SIZE:-10}
+      GBRAIN_SERVE_STALL_WATCHDOG_MS: ${GBRAIN_SERVE_STALL_WATCHDOG_MS:-30000}
+    expose:
+      - "3131"
+    volumes:
+      - gbrain-state:/srv/gbrain
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3131/health?deep=1 >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  worker:
+    image: gbrain-prod:latest
+    container_name: gbrain-worker
+    restart: unless-stopped
+    command: ["worker"]
+    depends_on:
+      gbrain:
+        condition: service_healthy
+    environment:
+      <<: *gbrain-common-env
+      GBRAIN_WORKER_CONCURRENCY: ${GBRAIN_WORKER_CONCURRENCY:-2}
+      GBRAIN_JOB_ISOLATION: ${GBRAIN_JOB_ISOLATION:-process}
+      GBRAIN_WORKER_MAX_RSS_MB: ${GBRAIN_WORKER_MAX_RSS_MB:-1536}
+      GBRAIN_ALLOW_SHELL_JOBS: ${GBRAIN_ALLOW_SHELL_JOBS:-0}
+      GBRAIN_POOL_SIZE: ${GBRAIN_WORKER_POOL_SIZE:-6}
+      GBRAIN_JOB_CHILD_POOL_SIZE: ${GBRAIN_JOB_CHILD_POOL_SIZE:-3}
+    volumes:
+      - gbrain-state:/srv/gbrain
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    stop_grace_period: 35s
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/gbrain-run jobs supervisor status --json >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  autopilot:
+    image: gbrain-prod:latest
+    container_name: gbrain-autopilot
+    restart: unless-stopped
+    command: ["autopilot"]
+    depends_on:
+      gbrain:
+        condition: service_healthy
+    environment:
+      <<: *gbrain-common-env
+      GBRAIN_AUTOPILOT_INTERVAL: ${GBRAIN_AUTOPILOT_INTERVAL:-300}
+      GBRAIN_POOL_SIZE: ${GBRAIN_AUTOPILOT_POOL_SIZE:-4}
+    volumes:
+      - gbrain-state:/srv/gbrain
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    stop_grace_period: 35s
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/gbrain-run autopilot --status >/dev/null || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+volumes:
+  gbrain-pgdata:
+  gbrain-state:
+  caddy-data:
+  caddy-config:
+
