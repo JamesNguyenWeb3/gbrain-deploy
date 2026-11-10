@@ -45,9 +45,11 @@ RUN groupadd --system --gid 10001 gbrain && \
     mkdir -p /srv/gbrain/.gbrain /srv/gbrain/brain /srv/gbrain/backups && \
     chown -R gbrain:gbrain /srv/gbrain
 
+SHELL ["/bin/bash", "-c"]
+
 # Download the official pre-compiled `gbrain-linux-x64` binary from GitHub Releases
 # and smoke-test `--version` before finishing the layer.
-RUN set -euo pipefail; \
+RUN set -eu; \
     arch="$(uname -m)"; \
     if [ "$arch" != "x86_64" ]; then \
       echo "ERROR: Official prebuilt Linux binary (gbrain-linux-x64) requires x86_64 (detected: $arch)." >&2; \
